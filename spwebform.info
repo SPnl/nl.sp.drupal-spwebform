@@ -1,0 +1,6 @@
+name = SP webform
+description =  Redirects spwebform requests to the specific webform and passes the contact data contained in the url to specific webform fields which are inserted in the webform when assigning it as a spwebform.
+core = 7.x
+package = sprbs
+dependencies[] = sprbs
+dependencies[] = spciviapi

@@ -1,0 +1,58 @@
+<?php
+
+/**
+ * Module install file.
+ */
+
+/**
+ * Implements hook_uninstall().
+ */
+function spwebform_uninstall() {
+  // Remove any variables we created.
+  variable_del('spwebform_crypt_key');
+}
+
+/**
+ * Implements hook_schema().
+ */
+function spwebform_schema() {
+  $schema['spwebform_used_secrets'] = array(
+    'description' => 'List of used spwebform secrets.',
+    'fields' => array(
+      'id' => array(
+        'description' => 'Primary key.',
+        'type' => 'serial',
+        'size' => 'big',
+        'not null' => TRUE,
+      ),
+      'fid' => array(
+        'description' => 'Webform id.',
+        'type' => 'int',
+        'size' => 'big',
+        'not null' => TRUE,
+      ),
+      'spwebformsecret' => array(
+        'description' => 'spwebform secret.',
+        'type' => 'text',
+        'size' => 'normal',
+      ),
+    ),
+    'primary key' => array(
+      'id',
+    ),
+    'indexes' => array(
+      'secrets_index' => array(
+        'fid',
+        array('spwebformsecret', 10),
+      ),
+    ),
+  );
+  return $schema;
+}
+
+/**
+ * Implements hook_update().
+ */
+function spwebform_update_7000() {
+  drupal_install_schema('spwebform');
+}

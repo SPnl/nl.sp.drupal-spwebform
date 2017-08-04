@@ -1,0 +1,407 @@
+<?php
+
+/**
+ * SP spwebform module.
+ */
+
+ /**
+  * Implements hook_menu().
+  */
+function spwebform_menu() {
+
+  $items['admin/config/sp/spwebform'] = array(
+    'title' => 'Maak van een webform een spwebform',
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => '0',
+    'access arguments' => array('administer_spwebform'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('spwebform_create_form'),
+  );
+
+  $items['admin/config/sp/spwebform/create'] = array(
+    'title' => 'Maak van een webform een spwebform',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => '0',
+    'access arguments' => array('administer_spwebform'),
+  );
+
+  $items['admin/config/sp/spwebform/settings'] = array(
+    'title' => 'SP spwebform instellingen',
+    'type' => MENU_LOCAL_TASK,
+    'weight' => '1',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('spwebform_settings_form'),
+    'access arguments' => array('administer_spwebform'),
+  );
+
+  $items['spwebform/%/%'] = array(
+    'page callback' => 'spwebform_redirect_request',
+    'page arguments' => array(1, 2),
+    'access arguments' => array('access content'),
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function spwebform_permission() {
+  return array(
+    'administer_spwebform' => array(
+      'title' => 'Beheer SP spwebform',
+    ),
+  );
+}
+
+/**
+ * SP spwebform admin form definition.
+ */
+function spwebform_settings_form($form, &$form_state) {
+  $form['spwebform_crypt_key'] = array(
+    '#type' => 'textfield',
+    '#title' => 'spwebformsecret encryption key',
+    '#default_value' => variable_get('spwebform_crypt_key', 'value'),
+  );
+
+  return system_settings_form($form);
+}
+
+/**
+ * Defines spwebform create form.
+ */
+function spwebform_create_form($form, &$form_state) {
+  $webforms_filtered = spwebform_get_webforms_list(TRUE);
+  if (empty($webforms_filtered)) {
+    $form['no_webforms_available'] = array(
+      '#markup' => '<p>Er zijn geen webformulieren beschikbaar.</p>',
+    );
+  }
+  else {
+    $form['create'] = array(
+      '#type' => 'select',
+      '#title' => 'Selecteer een webformulier',
+      '#options' => $webforms_filtered,
+    );
+
+    $form['submit'] = array(
+      '#type' => 'submit',
+      '#value' => 'Voeg spweform velden toe',
+    );
+  }
+  return $form;
+}
+
+/**
+ * Implements hook_submit().
+ */
+function spwebform_create_form_submit($form, &$form_state) {
+  $values = $form_state['values'];
+  if (spwebform_create($values['create'])) {
+    drupal_set_message('De velden zijn toegevoegd.');
+  }
+  else {
+    drupal_set_message('Er is iets misgegaan met het opslaan van de velden.');
+    watchdog('spwebform', 'Er is iets misgegaan met het opslaan van de velden.');
+  }
+}
+
+/**
+ * Redirects page request to webform.
+ *
+ * @param int $webform_id
+ *   Webform node id.
+ * @param string $secret
+ *   Encrypted data string.
+ */
+function spwebform_redirect_request($webform_id, $secret) {
+  global $base_url;
+
+  if (spwebform_is_spwebform_form($webform_id)) {
+    if (spwebform_valid_secret($secret)) {
+      setcookie('spwebformsecret', $secret, time() + 60, '/');
+    }
+    $url = $base_url . '/' . drupal_get_path_alias('node/' . $webform_id);
+    drupal_goto($url);
+  }
+  drupal_set_message('Er is een fout opgetreden, u heeft een ongeldige link gebruikt.', 'error');
+  drupal_goto();
+}
+
+/**
+ * Implements hook_form_webform_client_form_alter().
+ */
+function spwebform_form_webform_client_form_alter(&$form, &$form_state, $form_id) {
+  if (spwebform_is_spwebform_form($form['#node']->nid)) {
+    $form_id = $form['#node']->nid;
+    // Get secret from cookie.
+    if (!empty($_COOKIE['spwebformsecret'])) {
+      $secret = $_COOKIE['spwebformsecret'];
+      $form_state['spwebformsecret'] = $secret;
+      // Check if the secret is valid.
+      if (spwebform_valid_secret($secret)) {
+        // Check if secret is already used.
+        $query = "SELECT id FROM {spwebform_used_secrets} WHERE fid = :fid AND spwebformsecret = :secret";
+        $result = db_query($query, array(':fid' => $form_id, ':secret' => $secret))->fetchAssoc();
+        if (empty($result)) {
+          // Preset spwebform fields with values stored in secret.
+          $webform = $form['#node'];
+          if (empty($webform->webform['components'])) {
+            $webform->webform['components'] = array();
+          }
+          $components = &$webform->webform['components'];
+          $data = spwebform_decrypt($secret);
+          $items = spwebform_new_components();
+          foreach ($components as &$component) {
+            if (strpos($component['form_key'], 'spwebform_hidden_') === 0) {
+              $key = substr($component['form_key'], 17);
+              if (isset($items[$key])) {
+                $form['submitted']['spwebform_hidden_' . $key]['#value'] = $data[$key];
+              }
+            }
+          }
+          $form['#submit'][] = 'spwebform_custom_submit';
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Checks if the form is a spwebform, tests if specific fields are available.
+ *
+ * @param int $webform_id
+ *   Webform node id.
+ *
+ * @return bool
+ *   True is the form is a spwebform, false otherwise.
+ */
+function spwebform_is_spwebform_form($webform_id) {
+  $node = node_load($webform_id);
+  if (empty($node->webform['components'])) {
+    return FALSE;
+  }
+  foreach ($node->webform['components'] as $component) {
+    $component_keys[] = $component['form_key'];
+  }
+  $items = spwebform_new_components();
+  foreach ($items as $key => $value) {
+    if (!in_array('spwebform_hidden_' . $key, $component_keys)) {
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+/**
+ * Checks if the secret is valid.
+ *
+ * @param string $secret
+ *   Encrypted data string.
+ *
+ * @return bool
+ *   Returns TRUE when valid, FALSE when not.
+ */
+function spwebform_valid_secret($secret) {
+  $data = spwebform_decrypt($secret);
+  // Check if secret contains correct data structure.
+  $items = array_keys(spwebform_new_components());
+  // Add expiration date key.
+  $items[] = 'ti';
+  foreach ($items as $item) {
+    if (!isset($data[$item])) {
+      return FALSE;
+    }
+  }
+  // Check if secret has expired.
+  $time = time();
+  if ($time - $data['ti'] > 604800) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/**
+ * Creates an url applicable string that contains encrypted data.
+ *
+ * Settings.
+ *   id: CiviCRM contact id
+ *   em: Email address.
+ *   nm: Do not mail.
+ *   np: Do not phone.
+ *   oo: Opt out mass mailings.
+ *   ak: Address known.
+ *   im: Is member.
+ *   na: Contact name.
+ *   ti: Timestamp when cookie was set.
+ *
+ * @param string $hash
+ *   String that contains encrypted data.
+ *
+ * @return array
+ *   Decrypted data.
+ */
+function spwebform_decrypt($hash) {
+  $decoded = base64_decode($hash);
+  $key = variable_get('spwebform_crypt_key', 'paijeich6zoh4Mah');
+  $data = openssl_decrypt($decoded, 'AES-256-CBC', $key);
+  $data = unserialize($data);
+  return $data;
+}
+
+/**
+ * Get all webforms.
+ *
+ * @param bool $filter
+ *   When true filters out spwebforms.
+ *
+ * @return array
+ *   Array with all webform nodes.
+ */
+function spwebform_get_webforms($filter = FALSE) {
+  $webforms = &drupal_static(__FUNCTION__);
+  if (!isset($webforms)) {
+    $webform_node_types = webform_variable_get('webform_node_types');
+    $webforms = array();
+    $query = new EntityFieldQuery();
+
+    $result = $query
+      ->entityCondition('entity_type', 'node')
+      ->entityCondition('bundle', $webform_node_types, 'IN')
+      ->execute();
+
+    if (!empty($result['node'])) {
+      $nids = array_keys($result['node']);
+      $webforms = entity_load('node', $nids);
+    }
+    if ($filter) {
+      foreach ($webforms as $key => $webform) {
+        if (spwebform_is_spwebform_form($webform->nid)) {
+          unset($webforms[$key]);
+        }
+      }
+    }
+  }
+  return $webforms;
+}
+
+/**
+ * Get a list of all webforms.
+ *
+ * @param bool $filter
+ *   When true filters out spwebforms.
+ *
+ * @return array
+ *   Array with webform id as key, and title as value.
+ */
+function spwebform_get_webforms_list($filter = FALSE) {
+  $webforms_list = array();
+  $webforms = spwebform_get_webforms($filter);
+  if (!empty($webforms)) {
+    foreach ($webforms as $webform) {
+      $webforms_list[$webform->nid] = $webform->title;
+    }
+  }
+  return $webforms_list;
+}
+
+/**
+ * Adds spwebform hidden fields to webform.
+ *
+ * @param int $webform_id
+ *   Webform node id.
+ */
+function spwebform_create($webform_id) {
+  $webform = node_load($webform_id);
+  if (!empty($webform->webform)) {
+    $form = &$webform->webform;
+    if (empty($form['components'])) {
+      $form['components'] = array();
+    }
+    $components = &$form['components'];
+
+    $component_weight = count($items);
+    $parent = 0;
+
+    // Settings exisiting components weight.'
+    foreach ($components as $cid => $component) {
+      $components[$cid]['weight'] = $component_weight;
+      $component_weight++;
+    }
+
+    $component_id = count($components) + 1;
+    $component_weight = 0;
+    $items = spwebform_new_components();
+
+    foreach ($items as $key => $value) {
+      $components[$component_id] = array(
+        'nid' => $webform_id,
+        'cid' => $component_id,
+        'pid' => $parent,
+        'form_key' => 'spwebform_hidden_' . $key,
+        'name' => $value . ' (spwebform veld, verborgen)',
+        'type' => 'hidden',
+        'value' => '',
+        'extra' => array(
+          'private' => 0,
+          'hidden_type' => 'value',
+          'analysis' => FALSE,
+        ),
+        'required' => 0,
+        'weight' => $component_weight,
+        'page_num' => 1,
+      );
+      $component_id++;
+      $component_weight++;
+    }
+
+    // Save spwebform.
+    $webform->webform['components'] = $components;
+    try {
+      node_save($webform);
+    }
+    catch(Exception $e) {
+      return FALSE;
+    }
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * Returns webform components to add.
+ *
+ * @return array
+ *   Webform components.
+ */
+function spwebform_new_components() {
+  // New webform components.
+  $items = array(
+    'id' => 'Id',
+    'em' => 'E-mailadres',
+    'nm' => 'Niet mailen',
+    'np' => 'Niet bellen',
+    'oo' => 'Geen massamails',
+    'ak' => 'Adres bekend',
+    'im' => 'Is lid',
+    'na' => 'Naam',
+  );
+  return $items;
+}
+
+/**
+ * Submit function for spwebform form.
+ */
+function spwebform_custom_submit($form, $form_state) {
+  if ($form_state['input']['details']['page_num'] === $form_state['input']['details']['page_count']) {
+    if (!empty($form_state['spwebformsecret'])) {
+      db_insert('spwebform_used_secrets')
+        ->fields(array(
+          'fid' => $form['#node']->nid,
+          'spwebformsecret' => $form_state['spwebformsecret'],
+        ))
+        ->execute();
+      setcookie('spwebformsecret', '', time() - 60, '/');
+    }
+  }
+}
