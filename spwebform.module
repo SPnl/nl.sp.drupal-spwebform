@@ -410,7 +410,7 @@ function spwebform_create($webform_id) {
       $component_weight++;
     }
 
-    $component_id = count($components) + 1;
+    $component_id = max(array_keys($components)) + 1;
     $component_weight = 0;
 
     foreach ($items as $key => $value) {
