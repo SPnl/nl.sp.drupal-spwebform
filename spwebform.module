@@ -424,7 +424,7 @@ function spwebform_create($webform_id) {
         'value' => '',
         'extra' => array(
           'private' => 0,
-          'hidden_type' => 'value',
+          'hidden_type' => 'hidden',
           'analysis' => FALSE,
         ),
         'required' => 0,
