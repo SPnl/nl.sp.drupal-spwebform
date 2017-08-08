@@ -47,6 +47,26 @@ function spwebform_schema() {
       ),
     ),
   );
+
+  $schema['spwebform_redirect'] = array(
+    'description' => 'Stores redirects to the webform paths.',
+    'fields' => array(
+      'fid' => array(
+        'description' => 'Webform id.',
+        'type' => 'int',
+        'size' => 'big',
+        'not null' => TRUE,
+      ),
+      'redirect' => array(
+        'description' => 'Path to the webform page.',
+        'type' => 'text',
+        'size' => 'small',
+      ),
+    ),
+    'primary key' => array(
+      'fid',
+    ),
+  );
   return $schema;
 }
 
@@ -55,4 +75,14 @@ function spwebform_schema() {
  */
 function spwebform_update_7000() {
   drupal_install_schema('spwebform');
+}
+
+/**
+ * Add webform_redirect table.
+ */
+function spwebform_update_7001() {
+  $schema = spwebform_schema();
+  if (!db_table_exists('spwebform_redirect')) {
+    db_create_table('spwebform_redirect', $schema['spwebform_redirect']);
+  }
 }

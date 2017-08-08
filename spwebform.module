@@ -71,25 +71,92 @@ function spwebform_settings_form($form, &$form_state) {
  * Defines spwebform create form.
  */
 function spwebform_create_form($form, &$form_state) {
-  $webforms_filtered = spwebform_get_webforms_list(TRUE);
-  if (empty($webforms_filtered)) {
+  $storage = empty($form_state['storage']) ? array() : $form_state['storage'];
+  $webforms = spwebform_get_webforms_list(FALSE);
+
+  $form['#prefix'] = '<div id="spwebform_ajax_form">';
+  $form['#suffix'] = '</div>';
+
+  if (empty($webforms)) {
     $form['no_webforms_available'] = array(
       '#markup' => '<p>Er zijn geen webformulieren beschikbaar.</p>',
     );
   }
   else {
-    $form['create'] = array(
+    $default = (empty($storage['webform'])) ? '' : $storage['webform'];
+    $form['webform'] = array(
       '#type' => 'select',
       '#title' => 'Selecteer een webformulier',
-      '#options' => $webforms_filtered,
+      '#options' => $webforms,
+      '#empty_option' => 'Selecteer een formulier',
+      '#default_value' => $default,
+      '#ajax' => array(
+        'wrapper' => 'spwebform_ajax_form',
+        'callback' => 'spwebform_ajax_callback',
+      ),
     );
 
-    $form['submit'] = array(
-      '#type' => 'submit',
-      '#value' => 'Voeg spweform velden toe',
-    );
+    if (!empty($storage['webform'])) {
+      if (empty($storage['redirect'])) {
+        $default = spwebform_get_redirect($storage['webform']);
+      }
+      else {
+        $default = $storage['redirect'];
+      }
+
+      $form['redirect'] = array(
+        '#type' => 'textfield',
+        '#title' => 'Redirect pad',
+        '#description' => 'Dit is het pad van de pagina waar het formulier wordt getoond.',
+        '#default_value' => $default,
+      );
+
+      $form['submit'] = array(
+        '#type' => 'submit',
+        '#value' => 'Sla op',
+      );
+    }
   }
   return $form;
+}
+
+/**
+ * Implements hook_validate().
+ */
+function spwebform_create_form_validate($form, &$form_state) {
+  $values = $form_state['values'];
+  $storage = &$form_state['storage'];
+
+  // Store values.
+  if (isset($storage['webform'])) {
+    if ($storage['webform'] !== $values['webform']) {
+      unset($storage['redirect']);
+      unset($form_state['input']['redirect']);
+    }
+    else {
+      if (isset($values['redirect'])) {
+        $storage['redirect'] = $values['redirect'];
+      }
+    }
+  }
+  $storage['webform'] = $values['webform'];
+
+  // Validate form.
+  if (isset($storage['redirect'])) {
+    $path = $storage['redirect'];
+    if (!empty($path)) {
+      if (!url_is_external($path)) {
+        if (!drupal_valid_path($path)) {
+          if (!drupal_lookup_path('source', $path)) {
+            form_set_error('redirect', 'Dit is geen geldig pad.');
+          }
+        }
+      }
+      else {
+        form_set_error('redirect', 'Dit is geen geldig pad.');
+      }
+    }
+  }
 }
 
 /**
@@ -97,12 +164,21 @@ function spwebform_create_form($form, &$form_state) {
  */
 function spwebform_create_form_submit($form, &$form_state) {
   $values = $form_state['values'];
-  if (spwebform_create($values['create'])) {
-    drupal_set_message('De velden zijn toegevoegd.');
+  $storage = $form_state['storage'];
+
+  if (!spwebform_is_spwebform_form($values['webform'])) {
+    if (spwebform_create($values['webform'])) {
+      $form_state['storage']['webform'] = $values['webform'];
+      drupal_set_message('De velden zijn toegevoegd.');
+    }
+    else {
+      drupal_set_message('Er is iets misgegaan met het opslaan van de velden.');
+      watchdog('spwebform', 'Er is iets misgegaan met het opslaan van de velden.');
+    }
   }
-  else {
-    drupal_set_message('Er is iets misgegaan met het opslaan van de velden.');
-    watchdog('spwebform', 'Er is iets misgegaan met het opslaan van de velden.');
+  if (isset($values['redirect'])) {
+    spwebform_set_redirect($values['webform'], $values['redirect']);
+    drupal_set_message('De redirect is opgeslagen');
   }
 }
 
@@ -121,7 +197,11 @@ function spwebform_redirect_request($webform_id, $secret) {
     if (spwebform_valid_secret($secret)) {
       setcookie('spwebformsecret', $secret, time() + 60, '/');
     }
-    $url = $base_url . '/' . drupal_get_path_alias('node/' . $webform_id);
+    $redirect = spwebform_get_redirect($webform_id);
+    if (empty($redirect)) {
+      $redirect = drupal_get_path_alias('node/' . $webform_id);
+    }
+    $url = $base_url . '/' . $redirect;
     drupal_goto($url);
   }
   drupal_set_message('Er is een fout opgetreden, u heeft een ongeldige link gebruikt.', 'error');
@@ -320,6 +400,7 @@ function spwebform_create($webform_id) {
     }
     $components = &$form['components'];
 
+    $items = spwebform_new_components();
     $component_weight = count($items);
     $parent = 0;
 
@@ -331,7 +412,6 @@ function spwebform_create($webform_id) {
 
     $component_id = count($components) + 1;
     $component_weight = 0;
-    $items = spwebform_new_components();
 
     foreach ($items as $key => $value) {
       $components[$component_id] = array(
@@ -393,15 +473,64 @@ function spwebform_new_components() {
  * Submit function for spwebform form.
  */
 function spwebform_custom_submit($form, $form_state) {
+  // Check if on last page.
   if ($form_state['input']['details']['page_num'] === $form_state['input']['details']['page_count']) {
+    // Check if secret .
     if (!empty($form_state['spwebformsecret'])) {
+      // Add secret to used secrets table.
       db_insert('spwebform_used_secrets')
         ->fields(array(
           'fid' => $form['#node']->nid,
           'spwebformsecret' => $form_state['spwebformsecret'],
         ))
         ->execute();
+      // Remove cookie.
       setcookie('spwebformsecret', '', time() - 60, '/');
     }
+  }
+}
+
+/**
+ * Callback for the admin form.
+ */
+function spwebform_ajax_callback($form, &$form_state) {
+  return $form;
+}
+
+/**
+ * Returns spwebform redirect for webform.
+ *
+ * @param int $fid
+ *   Form id.
+ *
+ * @return string
+ *   Redirect path.
+ */
+function spwebform_get_redirect($fid) {
+  $query = "SELECT redirect FROM {spwebform_redirect} WHERE fid = :fid";
+  $result = db_query($query, array(':fid' => $fid));
+  $path = $result->fetchField(0);
+  if (!empty($path)) {
+    return $path;
+  }
+  return '';
+}
+
+/**
+ * Store redirect in database.
+ *
+ * @param int $fid
+ *   Form node id.
+ * @param string $redirect
+ *   Redirect path.
+ */
+function spwebform_set_redirect($fid, $redirect = '') {
+  if (!empty($fid)) {
+    db_merge('spwebform_redirect')
+      ->key(array('fid' => $fid))
+      ->fields(array(
+        'redirect' => $redirect,
+      ))
+      ->execute();
   }
 }
