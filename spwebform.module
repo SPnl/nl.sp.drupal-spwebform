@@ -465,6 +465,7 @@ function spwebform_new_components() {
     'ak' => 'Adres bekend',
     'im' => 'Is lid',
     'na' => 'Naam',
+    'pk' => 'Telefoon bekend',
   );
   return $items;
 }
